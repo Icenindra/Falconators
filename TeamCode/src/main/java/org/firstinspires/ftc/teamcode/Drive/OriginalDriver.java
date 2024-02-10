@@ -4,9 +4,8 @@ import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.CRServo;
 import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.util.ElapsedTime;
-
+import com.qualcomm.robotcore.util.Range;
 
 import org.firstinspires.ftc.robotcore.external.hardware.camera.BuiltinCameraDirection;
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
@@ -16,7 +15,7 @@ import org.firstinspires.ftc.vision.VisionPortal;
 import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
 
-
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @TeleOp(name="OriginalDrive")
@@ -29,7 +28,10 @@ public class OriginalDriver extends LinearOpMode {
     private DcMotor rightFrontDrive = null;
     private DcMotor rightBackDrive = null;
     private DcMotor arm = null;
-    private CRServo claw = null;
+    private DcMotor arm2 = null;
+    private CRServo claw1 = null;
+
+    private DcMotor intake = null;
     final double DESIRED_DISTANCE = 5.0; //  this is how close the camera should get to the target (inches)
 
     //  Set the GAIN constants to control the relationship between the measured position error, and how much power is
@@ -68,16 +70,19 @@ public class OriginalDriver extends LinearOpMode {
         double  strafe          = 0;        // Desired strafe power/speed (-1 to +1)
         double  turn            = 0;        // Desired turning power/speed (-1 to +1)
 
-//        initAprilTag();
+        initAprilTag();
 
         // Initialize the hardware variables. Note that the strings used here must correspond
         // to the names assigned during the robot configuration step on the DS or RC devices.
-        claw = hardwareMap.get(CRServo.class, "claw");
+        claw1 = hardwareMap.get(CRServo.class, "claw1");
         leftFrontDrive = hardwareMap.get(DcMotor.class, "leftFrontDrive");
         leftBackDrive = hardwareMap.get(DcMotor.class, "leftBottomDrive");
         rightFrontDrive = hardwareMap.get(DcMotor.class, "rightFrontDrive");
         rightBackDrive = hardwareMap.get(DcMotor.class, "rightBottomDrive");
         arm = hardwareMap.get(DcMotor.class, "arm");
+        arm2 = hardwareMap.get(DcMotor.class,"arm2");
+        intake = hardwareMap.get(DcMotor.class,"intake");
+
 
 
         leftFrontDrive.setDirection(DcMotor.Direction.REVERSE);
@@ -101,143 +106,119 @@ public class OriginalDriver extends LinearOpMode {
 
         // run until the end of the match (driver presses STOP)
         while (opModeIsActive()) {
-            double max;
             double armInput = gamepad2.left_stick_y /1.2;
+            if (gamepad1.dpad_up) {
+                claw1.setPower(-0.6); // Move backward
+            } else if (gamepad1.dpad_down) {
+                claw1.setPower(0.6); // Move forward
+            } else {
+                claw1.setPower(0.0); // Stop
+            }
+//            double intakeInput = gamepad2.right_stick_y/1.5;
 
 
             // POV Mode uses left joystick to go forward & strafe, and right joystick to rotate.
-            double axial = gamepad1.left_stick_y;  // Note: pushing stick forward gives negative value
-            double lateral = -gamepad1.right_stick_x;
-            double yaw = gamepad1.left_stick_x;
-
-            // Combine the joystick requests for each axis-motion to determine each wheel's power.
-            // Set up a variable for each drive wheel to save the power level for telemetry.
-            double leftFrontPower = axial + lateral + yaw;
-            double rightFrontPower = axial - lateral - yaw;
-            double leftBackPower = axial - lateral + yaw;
-            double rightBackPower = axial + lateral - yaw;
-
-            // Normalize the values so no wheel power exceeds 100%
-            // This ensures that the robot maintains the desired motion.
-            max = Math.max(Math.abs(leftFrontPower), Math.abs(rightFrontPower));
-            max = Math.max(max, Math.abs(leftBackPower));
-            max = Math.max(max, Math.abs(rightBackPower));
-
-            if (max > 1.0) {
-                leftFrontPower /= max;
-                rightFrontPower /= max;
-                leftBackPower /= max;
-                rightBackPower /= max;
-            }
             arm.setPower(-armInput);
+            arm2.setPower(-armInput);
 
-            if (gamepad2.x) {
-                claw.setPower(-1);
+
+            double intakeClaw = gamepad2.right_stick_y;
+            claw1.setPower(intakeClaw);
+
+
+            // Send calculated power
+//            intake.setPower(intakeInput);
+
+
+            targetFound = false;
+            desiredTag = null;
+
+            // Step through the list of detected tags and look for a matching tag
+            List<AprilTagDetection> currentDetections = aprilTag.getDetections();
+            for (AprilTagDetection detection : currentDetections) {
+                // Look to see if we have size info on this tag.
+                if (detection.metadata != null) {
+                    //  Check to see if we want to track towards this tag.
+                    if ((DESIRED_TAG_ID < 0) || (detection.id == DESIRED_TAG_ID)) {
+                        // Yes, we want to use this tag.
+                        targetFound = true;
+                        desiredTag = detection;
+                        break;  // don't look any further.
+                    } else {
+                        // This tag is in the library, but we do not want to track it right now.
+                        telemetry.addData("Skipping", "Tag ID %d is not desired", detection.id);
+                    }
+                } else {
+                    // This tag is NOT in the library, so we don't have enough information to track to it.
+                    telemetry.addData("Unknown", "Tag ID %d is not in TagLibrary", detection.id);
+                }
             }
-            if (gamepad2.a) {
-                claw.setPower(1);
+
+            // Tell the driver what we see, and what to do.
+            if (targetFound) {
+                telemetry.addData("\n>", "HOLD Left-Bumper to Drive to Target\n");
+                telemetry.addData("Found", "ID %d (%s)", desiredTag.id, desiredTag.metadata.name);
+                telemetry.addData("Range", "%5.1f inches", desiredTag.ftcPose.range);
+                telemetry.addData("Bearing", "%3.0f degrees", desiredTag.ftcPose.bearing);
+                telemetry.addData("Yaw", "%3.0f degrees", desiredTag.ftcPose.yaw);
+            } else {
+                telemetry.addData("\n>", "Drive using joysticks to find valid target\n");
             }
-            claw.setPower(0);
 
-            // Send calculated power to wheels
-            leftFrontDrive.setPower(leftFrontPower);
-            rightFrontDrive.setPower(rightFrontPower);
-            leftBackDrive.setPower(leftBackPower);
-            rightBackDrive.setPower(rightBackPower);
+            // If Left Bumper is being pressed, AND we have found the desired target, Drive to target Automatically .
+            if (gamepad1.left_bumper && targetFound) {
 
+                // Determine heading, range and Yaw (tag image rotation) error so we can use them to control the robot automatically.
+                double rangeError = (desiredTag.ftcPose.range - DESIRED_DISTANCE);
+                double headingError = desiredTag.ftcPose.bearing;
+                double yawError = desiredTag.ftcPose.yaw;
 
-//            targetFound = false;
-//            desiredTag = null;
-//
-//            // Step through the list of detected tags and look for a matching tag
-//            List<AprilTagDetection> currentDetections = aprilTag.getDetections();
-//            for (AprilTagDetection detection : currentDetections) {
-//                // Look to see if we have size info on this tag.
-//                if (detection.metadata != null) {
-//                    //  Check to see if we want to track towards this tag.
-//                    if ((DESIRED_TAG_ID < 0) || (detection.id == DESIRED_TAG_ID)) {
-//                        // Yes, we want to use this tag.
-//                        targetFound = true;
-//                        desiredTag = detection;
-//                        break;  // don't look any further.
-//                    } else {
-//                        // This tag is in the library, but we do not want to track it right now.
-//                        telemetry.addData("Skipping", "Tag ID %d is not desired", detection.id);
-//                    }
-//                } else {
-//                    // This tag is NOT in the library, so we don't have enough information to track to it.
-//                    telemetry.addData("Unknown", "Tag ID %d is not in TagLibrary", detection.id);
-//                }
-//            }
-//
-//            // Tell the driver what we see, and what to do.
-//            if (targetFound) {
-//                telemetry.addData("\n>", "HOLD Left-Bumper to Drive to Target\n");
-//                telemetry.addData("Found", "ID %d (%s)", desiredTag.id, desiredTag.metadata.name);
-//                telemetry.addData("Range", "%5.1f inches", desiredTag.ftcPose.range);
-//                telemetry.addData("Bearing", "%3.0f degrees", desiredTag.ftcPose.bearing);
-//                telemetry.addData("Yaw", "%3.0f degrees", desiredTag.ftcPose.yaw);
-//            } else {
-//                telemetry.addData("\n>", "Drive using joysticks to find valid target\n");
-//            }
-//
-//            // If Left Bumper is being pressed, AND we have found the desired target, Drive to target Automatically .
-//            if (gamepad1.left_bumper && targetFound) {
-//
-//                // Determine heading, range and Yaw (tag image rotation) error so we can use them to control the robot automatically.
-//                double rangeError = (desiredTag.ftcPose.range - DESIRED_DISTANCE);
-//                double headingError = desiredTag.ftcPose.bearing;
-//                double yawError = desiredTag.ftcPose.yaw;
-//
-//                // Use the speed and turn "gains" to calculate how we want the robot to move.
-//                drive = Range.clip(rangeError * SPEED_GAIN, -MAX_AUTO_SPEED, MAX_AUTO_SPEED);
-//                turn = Range.clip(headingError * TURN_GAIN, -MAX_AUTO_TURN, MAX_AUTO_TURN);
-//                strafe = Range.clip(-yawError * STRAFE_GAIN, -MAX_AUTO_STRAFE, MAX_AUTO_STRAFE);
-//                setDegrees(desiredTag.ftcPose.bearing);
-//                if (rangeError < 0.5 || rangeError > -0.5) {
-//                    setisStraight(true);
-//                } else {
-//                    setisStraight(false);
-//                }
-//
-//                telemetry.addData("Auto", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
-//            } else if (gamepad1.left_bumper && !targetFound) {
-//                if (isStraight) {
-//                    setDegrees(0);
-//                    continue;
-//                }
-//                double rangeError = 0;
-//                double headingError = getDegrees();
-//                double yawError = 0;
-//                drive = Range.clip(rangeError * SPEED_GAIN, -MAX_AUTO_SPEED, MAX_AUTO_SPEED);
-//                turn = Range.clip(headingError * TURN_GAIN, -MAX_AUTO_TURN, MAX_AUTO_TURN);
-//                strafe = Range.clip(-yawError * STRAFE_GAIN, -MAX_AUTO_STRAFE, MAX_AUTO_STRAFE);
-//                telemetry.addData("Auto", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
-//            } else {
-//
-//                // drive using manual POV Joystick mode.  Slow things down to make the robot more controlable.
-//                drive = -gamepad1.left_stick_y;  //
-//                strafe = gamepad1.right_stick_x;  //
-//                turn = -gamepad1.left_stick_x;  //
-//                telemetry.addData("Manual", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
-//            }
-//            telemetry.update();
-//
-//            // Apply desired  motions to the drivetrain.
-//
-//            moveRobot(drive, strafe, turn);
-//            sleep(10);
-//
-//            // Show the elapsed game time and wheel power.
-//            telemetry.addData("Status", "Run Time: " + runtime.toString());
-//            telemetry.addData("Front left/Right", "%4.2f, %4.2f", leftFrontPower, rightFrontPower);
-//            telemetry.addData("Back  left/Right", "%4.2f, %4.2f", leftBackPower, rightBackPower);
-//            telemetry.update();
+                // Use the speed and turn "gains" to calculate how we want the robot to move.
+                drive = Range.clip(rangeError * SPEED_GAIN, -MAX_AUTO_SPEED, MAX_AUTO_SPEED);
+                turn = Range.clip(headingError * TURN_GAIN, -MAX_AUTO_TURN, MAX_AUTO_TURN);
+                strafe = Range.clip(-yawError * STRAFE_GAIN, -MAX_AUTO_STRAFE, MAX_AUTO_STRAFE);
+                setDegrees(desiredTag.ftcPose.bearing);
+                if (rangeError < 0.5 || rangeError > -0.5) {
+                    setisStraight(true);
+                } else {
+                    setisStraight(false);
+                }
+
+                telemetry.addData("Auto", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
+            } else if (gamepad1.left_bumper && !targetFound) {
+                if (isStraight) {
+                    setDegrees(0);
+                    continue;
+                }
+                double rangeError = 0;
+                double headingError = getDegrees();
+                double yawError = 0;
+                drive = Range.clip(rangeError * SPEED_GAIN, -MAX_AUTO_SPEED, MAX_AUTO_SPEED);
+                turn = Range.clip(headingError * TURN_GAIN, -MAX_AUTO_TURN, MAX_AUTO_TURN);
+                strafe = Range.clip(-yawError * STRAFE_GAIN, -MAX_AUTO_STRAFE, MAX_AUTO_STRAFE);
+                telemetry.addData("Auto", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
+            } else {
+
+                // drive using manual POV Joystick mode.  Slow things down to make the robot more controlable.
+                strafe = -gamepad1.left_stick_y;  //
+                turn = -gamepad1.right_stick_x;  //
+                drive = gamepad1.left_stick_x;  //
+                telemetry.addData("Manual", "Drive %5.2f, Strafe %5.2f, Turn %5.2f ", drive, strafe, turn);
+            }
+            telemetry.update();
+
+            // Apply desired  motions to the drivetrain.
+
+            moveRobot(drive, strafe, turn);
+            sleep(10);
+
+            // Show the elapsed game time and wheel power.
 //
 //
 //        }
         }
     }
+
     public void moveRobot(double x, double y, double yaw) {
         // Calculate wheel powers.
         double leftFrontPower    =  x -y -yaw;
@@ -332,4 +313,3 @@ public class OriginalDriver extends LinearOpMode {
             sleep(20);
         }
     }
-}
